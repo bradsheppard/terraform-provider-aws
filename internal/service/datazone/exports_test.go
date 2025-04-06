@@ -23,6 +23,7 @@ var (
 	FindGlossaryByID           = findGlossaryByID
 	FindGlossaryTermByID       = findGlossaryTermByID
 	FindUserProfileByID        = findUserProfileByID
+    FindProjectMembership      = findProjectMembership
 
 	IsResourceMissing = isResourceMissing
 )
