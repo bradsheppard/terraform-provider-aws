@@ -35,34 +35,25 @@ import (
 	// awstypes.<Type Name>.
 	"context"
 	"errors"
+    "fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/protocol/query"
 	"github.com/aws/aws-sdk-go-v2/service/datazone"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/datazone/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
-	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
-	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
-	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
-	sweepfw "github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -164,7 +155,7 @@ func (r *resourceProjectMembership) Schema(ctx context.Context, req resource.Sch
             "user_designation": schema.StringAttribute{
                 Required: true,
                 Validators: []validator.String{
-                    stringvalidator.OneOf("owner", "contributor", "viewer", "consumer", "steward"),
+                    stringvalidator.OneOf("PROJECT_OWNER", "PROJECT_CONTRIBUTOR", "PROJECT_VIEWER", "PROJECT_CONSUMER", "PROJECT_STEWARD"),
                 },
             },
             "member": schema.StringAttribute{
@@ -208,11 +199,24 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 	// TIP: -- 3. Populate a Create input structure
 	var input datazone.CreateProjectMembershipInput
 	// TIP: Using a field name prefix allows mapping fields such as `ID` to `ProjectMembershipId`
-	resp.Diagnostics.Append(flex.Expand(ctx, plan, &input, flex.WithFieldNamePrefix("ProjectMembership"))...)
-	if resp.Diagnostics.HasError() {
-		return
+	//resp.Diagnostics.Append(flex.Expand(ctx, plan, &input)...)
+	//if resp.Diagnostics.HasError() {
+	//	return
+	//}
+
+    input.DomainIdentifier = plan.DomainIdentifier.ValueStringPointer()
+    input.ProjectIdentifier = plan.ProjectIdentifier.ValueStringPointer()
+
+    input.Designation = awstypes.UserDesignation(plan.UserDesignation.ValueString())
+
+	if !plan.Member.IsNull() {
+        input.Member = &awstypes.MemberMemberUserIdentifier{
+            Value: plan.Member.ValueString(),
+        }
 	}
-	
+
+    // Human friendly ID for errors
+    id := fmt.Sprintf("%s:%s:%s", *input.DomainIdentifier, *input.ProjectIdentifier, plan.Member.ValueString())
 
 	// TIP: -- 4. Call the AWS Create function
 	out, err := conn.CreateProjectMembership(ctx, &input)
@@ -220,14 +224,14 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 		// TIP: Since ID has not been set yet, you cannot use plan.ID.String()
 		// in error messages at this point.
 		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameProjectMembership, plan.DomainIdentifier.String(), err),
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameProjectMembership, id, err),
 			err.Error(),
 		)
 		return
 	}
 	if out == nil {
 		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameProjectMembership, plan.DomainIdentifier.String(), nil),
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameProjectMembership, id, nil),
 			errors.New("failed when creating").Error(),
 		)
 		return
@@ -241,7 +245,7 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 
 	// TIP: -- 6. Use a waiter to wait for create to complete
 	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
-    findProjectMembershipInput := &findProjectMembershipInput{
+    findProjectMembershipInput := &FindProjectMembershipInput{
         DomainIdentifier: plan.DomainIdentifier.ValueStringPointer(),
         ProjectIdentifier: plan.ProjectIdentifier.ValueStringPointer(),
         Member: plan.Member.ValueStringPointer(),
@@ -249,7 +253,7 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 	_, err = waitProjectMembershipCreated(ctx, conn, findProjectMembershipInput, createTimeout)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.DataZone, create.ErrActionWaitingForCreation, ResNameProjectMembership, plan.DomainIdentifier.String(), err),
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionWaitingForCreation, ResNameProjectMembership, id, err),
 			err.Error(),
 		)
 		return
@@ -281,7 +285,7 @@ func (r *resourceProjectMembership) Read(ctx context.Context, req resource.ReadR
 		return
 	}
 	
-    findProjectMembershipInput := &findProjectMembershipInput{
+    findProjectMembershipInput := &FindProjectMembershipInput{
         DomainIdentifier: state.DomainIdentifier.ValueStringPointer(),
         ProjectIdentifier: state.ProjectIdentifier.ValueStringPointer(),
         Member: state.Member.ValueStringPointer(),
@@ -366,7 +370,7 @@ func (r *resourceProjectMembership) Delete(ctx context.Context, req resource.Del
 	
 	// TIP: -- 5. Use a waiter to wait for delete to complete
 	deleteTimeout := r.DeleteTimeout(ctx, state.Timeouts)
-    findProjectMembershipInput := &findProjectMembershipInput{
+    findProjectMembershipInput := &FindProjectMembershipInput{
         DomainIdentifier: state.DomainIdentifier.ValueStringPointer(),
         ProjectIdentifier: state.ProjectIdentifier.ValueStringPointer(),
         Member: state.Member.ValueStringPointer(),
@@ -417,7 +421,7 @@ const (
 // exported (i.e., capitalized).
 //
 // You will need to adjust the parameters and names to fit the service.
-func waitProjectMembershipCreated(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *findProjectMembershipInput, timeout time.Duration) (*datazone.CreateProjectMembershipOutput, error) {
+func waitProjectMembershipCreated(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput, timeout time.Duration) (*datazone.CreateProjectMembershipOutput, error) {
 	stateConf := &retry.StateChangeConf{
 		Pending:                   []string{},
 		Target:                    []string{statusNormal},
@@ -437,7 +441,7 @@ func waitProjectMembershipCreated(ctx context.Context, conn *datazone.Client, fi
 
 // TIP: A deleted waiter is almost like a backwards created waiter. There may
 // be additional pending states, however.
-func waitProjectMembershipDeleted(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *findProjectMembershipInput, timeout time.Duration) (*datazone.DeleteProjectMembershipOutput, error) {
+func waitProjectMembershipDeleted(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput, timeout time.Duration) (*datazone.DeleteProjectMembershipOutput, error) {
 	stateConf := &retry.StateChangeConf{
 		Pending:                   []string{statusDeleting, statusNormal},
 		Target:                    []string{},
@@ -460,7 +464,7 @@ func waitProjectMembershipDeleted(ctx context.Context, conn *datazone.Client, fi
 //
 // Waiters consume the values returned by status functions. Design status so
 // that it can be reused by a create, update, and delete waiter, if possible.
-func statusProjectMembership(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *findProjectMembershipInput) retry.StateRefreshFunc {
+func statusProjectMembership(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput) retry.StateRefreshFunc {
 	return func() (any, string, error) {
 		out, err := findProjectMembership(ctx, conn, findProjectMembershipInput)
 		if tfresource.NotFound(err) {
@@ -480,7 +484,7 @@ func statusProjectMembership(ctx context.Context, conn *datazone.Client, findPro
 // request from the status function. However, we have found that find often
 // comes in handy in other places besides the status function. As a result, it
 // is good practice to define it separately.
-func findProjectMembership(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *findProjectMembershipInput) (*string, error) {
+func findProjectMembership(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput) (*string, error) {
     input := datazone.ListProjectMembershipsInput{
         DomainIdentifier: findProjectMembershipInput.DomainIdentifier,
         ProjectIdentifier: findProjectMembershipInput.ProjectIdentifier,
@@ -532,17 +536,14 @@ func findProjectMembership(ctx context.Context, conn *datazone.Client, findProje
 // See more:
 // https://developer.hashicorp.com/terraform/plugin/framework/handling-data/accessing-values
 type resourceProjectMembershipModel struct {
-	CreatedAt           timetypes.RFC3339                                     `tfsdk:"created_at"`
-	CreatedBy           types.String                                          `tfsdk:"created_by"`
 	DomainIdentifier    types.String                                          `tfsdk:"domain_identifier"`
-    Designation         types.String                                          `tfsdk:"designation"`
+    UserDesignation     types.String                                          `tfsdk:"user_designation"`
     Member              types.String                                          `tfsdk:"member"`
     ProjectIdentifier   types.String                                          `tfsdk:"project_identifier"`
 	Timeouts            timeouts.Value                                        `tfsdk:"timeouts"`
-	Type                types.String                                          `tfsdk:"type"`
 }
 
-type findProjectMembershipInput struct {
+type FindProjectMembershipInput struct {
     DomainIdentifier    *string
     ProjectIdentifier   *string
     Member              *string

@@ -80,6 +80,11 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*types.Servic
 			Name:     "Project",
 		},
 		{
+			Factory:  newResourceProjectMembership,
+			TypeName: "aws_datazone_project_membership",
+			Name:     "Project Membership",
+		},
+		{
 			Factory:  newResourceUserProfile,
 			TypeName: "aws_datazone_user_profile",
 			Name:     "User Profile",
