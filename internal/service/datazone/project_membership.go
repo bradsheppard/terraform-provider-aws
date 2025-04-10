@@ -35,7 +35,8 @@ import (
 	// awstypes.<Type Name>.
 	"context"
 	"errors"
-    "fmt"
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -506,16 +507,34 @@ func findProjectMembership(ctx context.Context, conn *datazone.Client, findProje
             return nil, err
         }
 
+        fmt.Println("In page")
+        fmt.Println("Num members: " + strconv.Itoa(len(page.Members)))
+
 		for _, membership := range page.Members {
             if group, ok := membership.MemberDetails.(*awstypes.MemberDetailsMemberGroup); ok {
-                if findProjectMembershipInput.Member == group.Value.GroupId {
-                    return findProjectMembershipInput.Member, nil
+                fmt.Println(*group.Value.GroupId)
+                fmt.Println(*findProjectMembershipInput.Member)
+                
+                getGroupProfileInput := datazone.GetGroupProfileInput{
+                    DomainIdentifier: findProjectMembershipInput.DomainIdentifier,
+                    GroupIdentifier: group.Value.GroupId,
                 }
+
+                result, _ := conn.GetGroupProfile(ctx, &getGroupProfileInput)
+                fmt.Println(result.GroupName)
             }
             if user, ok := membership.MemberDetails.(*awstypes.MemberDetailsMemberUser); ok {
-                if findProjectMembershipInput.Member == user.Value.UserId {
-                    return findProjectMembershipInput.Member, nil
+                fmt.Println(*user.Value.UserId)
+                fmt.Println(*findProjectMembershipInput.Member)
+
+                getUserProfileInput := datazone.GetUserProfileInput{
+                    DomainIdentifier: findProjectMembershipInput.DomainIdentifier,
+                    UserIdentifier: user.Value.UserId,
                 }
+
+                result, _ := conn.GetUserProfile(ctx, &getUserProfileInput)
+                fmt.Println(result.Details)
+
             }
 		}
 	}
