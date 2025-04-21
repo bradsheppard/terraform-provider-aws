@@ -83,9 +83,9 @@ func TestAccDataZoneProjectMembership_basic(t *testing.T) {
 	pName := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
 	dName := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
     rName := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
-	projectName := "aws_datazone_project.test"
-	domainName := "aws_datazone_domain.test"
 	resourceName := "aws_datazone_project_membership.test"
+	domainName := "aws_datazone_domain.test"
+    projectName := "aws_datazone_project.test"
 
 	resource.ParallelTest(t, resource.TestCase{
 		PreCheck: func() {
@@ -100,9 +100,9 @@ func TestAccDataZoneProjectMembership_basic(t *testing.T) {
 			{
 				Config: testAccProjectMembershipConfig_basic(pName, dName, rName),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					testAccCheckProjectMembershipExists(ctx, dName, pName, rName),
-					resource.TestCheckResourceAttr(resourceName, "domain_identifier", domainName),
-					resource.TestCheckResourceAttr(resourceName, "project_identifier", projectName),
+					testAccCheckProjectMembershipExists(ctx, resourceName),
+					resource.TestCheckResourceAttrPair(resourceName, "domain_identifier", domainName, names.AttrID),
+					resource.TestCheckResourceAttrPair(resourceName, "project_identifier", projectName, names.AttrID),
 				),
 			},
 			{
@@ -180,17 +180,26 @@ func TestAccDataZoneProjectMembership_basic(t *testing.T) {
 //	}
 //}
 
-func testAccCheckProjectMembershipExists(ctx context.Context, domainIdentifier, projectIdentifier, memberName string) resource.TestCheckFunc {
+func testAccCheckProjectMembershipExists(ctx context.Context, resourceName string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		rs, ok := s.RootModule().Resources[memberName]
-        id := fmt.Sprintf("%s:%s:%s", domainIdentifier, projectIdentifier, memberName)
+		rs, ok := s.RootModule().Resources[resourceName]
+        fmt.Println(s.RootModule())
 
 		if !ok {
-			return create.Error(names.DataZone, create.ErrActionCheckingExistence, tfdatazone.ResNameProjectMembership, id, errors.New("not found"))
+            fmt.Println("Errored in test 1")
+			return create.Error(names.DataZone, create.ErrActionCheckingExistence, tfdatazone.ResNameProjectMembership, resourceName, errors.New("not found"))
 		}
 
 		if rs.Primary.ID == "" {
-			return create.Error(names.DataZone, create.ErrActionCheckingExistence, tfdatazone.ResNameProjectMembership, id, errors.New("not set"))
+            fmt.Println("Errored in test 2")
+			return create.Error(names.DataZone, create.ErrActionCheckingExistence, tfdatazone.ResNameProjectMembership, resourceName, errors.New("not set"))
+		}
+
+		domainIdentifier, projectIdentifier, memberName, err := tfdatazone.ProjectMembershipParseResourceID(rs.Primary.ID)
+
+		if err != nil {
+            fmt.Println("Non nil error")
+			return err
 		}
 
 		conn := acctest.Provider.Meta().(*conns.AWSClient).DataZoneClient(ctx)
@@ -201,11 +210,14 @@ func testAccCheckProjectMembershipExists(ctx context.Context, domainIdentifier, 
             Member: &memberName,
         }
 
-        _, err := tfdatazone.FindProjectMembership(ctx, conn, findProjectMembershipInput)
+        _, err = tfdatazone.FindProjectMembership(ctx, conn, findProjectMembershipInput)
 
 		if err != nil {
+            fmt.Println("Errored in test 3")
 			return create.Error(names.DataZone, create.ErrActionCheckingExistence, tfdatazone.ResNameProjectMembership, rs.Primary.ID, err)
 		}
+
+        fmt.Println("Finished test section")
 
 		return nil
 	}

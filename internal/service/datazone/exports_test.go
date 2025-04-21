@@ -25,5 +25,7 @@ var (
 	FindUserProfileByID        = findUserProfileByID
     FindProjectMembership      = findProjectMembership
 
+    ProjectMembershipParseResourceID = projectMembershipParseResourceID
+
 	IsResourceMissing = isResourceMissing
 )

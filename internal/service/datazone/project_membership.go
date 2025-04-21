@@ -36,7 +36,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
+    "strings"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -162,6 +162,7 @@ func (r *resourceProjectMembership) Schema(ctx context.Context, req resource.Sch
             "member": schema.StringAttribute{
                 Required: true,
             },
+			names.AttrID: framework.IDAttribute(),
 		},
 		Blocks: map[string]schema.Block{
 			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
@@ -189,6 +190,8 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 
 	// TIP: -- 1. Get a client connection to the relevant service
 	conn := r.Meta().DataZoneClient(ctx)
+
+    fmt.Println("Here1")
 	
 	// TIP: -- 2. Fetch the plan
 	var plan resourceProjectMembershipModel
@@ -196,6 +199,8 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+    fmt.Println("Here 2")
 
 	// TIP: -- 3. Populate a Create input structure
 	var input datazone.CreateProjectMembershipInput
@@ -217,10 +222,11 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 	}
 
     // Human friendly ID for errors
-    id := fmt.Sprintf("%s:%s:%s", *input.DomainIdentifier, *input.ProjectIdentifier, plan.Member.ValueString())
+    id := projectMembershipCreateResourceId(*input.DomainIdentifier, *input.ProjectIdentifier, plan.Member.ValueString())
 
 	// TIP: -- 4. Call the AWS Create function
 	out, err := conn.CreateProjectMembership(ctx, &input)
+
 	if err != nil {
 		// TIP: Since ID has not been set yet, you cannot use plan.ID.String()
 		// in error messages at this point.
@@ -238,8 +244,11 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
 		return
 	}
 
+    fmt.Println("HERE")
 	// TIP: -- 5. Using the output from the create function, set attributes
 	resp.Diagnostics.Append(flex.Flatten(ctx, out, &plan)...)
+	plan.ID = flex.StringToFramework(ctx, &id)
+
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -253,12 +262,15 @@ func (r *resourceProjectMembership) Create(ctx context.Context, req resource.Cre
     }
 	_, err = waitProjectMembershipCreated(ctx, conn, findProjectMembershipInput, createTimeout)
 	if err != nil {
+        fmt.Println("We failed")
 		resp.Diagnostics.AddError(
 			create.ProblemStandardMessage(names.DataZone, create.ErrActionWaitingForCreation, ResNameProjectMembership, id, err),
 			err.Error(),
 		)
 		return
 	}
+
+    fmt.Println(plan)
 	
 	// TIP: -- 7. Save the request plan to response state
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
@@ -422,7 +434,7 @@ const (
 // exported (i.e., capitalized).
 //
 // You will need to adjust the parameters and names to fit the service.
-func waitProjectMembershipCreated(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput, timeout time.Duration) (*datazone.CreateProjectMembershipOutput, error) {
+func waitProjectMembershipCreated(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput, timeout time.Duration) (*FindProjectMembershipOutput, error) {
 	stateConf := &retry.StateChangeConf{
 		Pending:                   []string{},
 		Target:                    []string{statusNormal},
@@ -433,16 +445,23 @@ func waitProjectMembershipCreated(ctx context.Context, conn *datazone.Client, fi
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-	if out, ok := outputRaw.(*datazone.CreateProjectMembershipOutput); ok {
+    fmt.Println("Raw: ")
+    fmt.Println(outputRaw)
+
+	if out, ok := outputRaw.(*FindProjectMembershipOutput); ok {
+        fmt.Println("We're good!")
 		return out, err
 	}
+
+    fmt.Println("Error happened")
+    fmt.Println(err)
 
 	return nil, err
 }
 
 // TIP: A deleted waiter is almost like a backwards created waiter. There may
 // be additional pending states, however.
-func waitProjectMembershipDeleted(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput, timeout time.Duration) (*datazone.DeleteProjectMembershipOutput, error) {
+func waitProjectMembershipDeleted(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput, timeout time.Duration) (*FindProjectMembershipOutput, error) {
 	stateConf := &retry.StateChangeConf{
 		Pending:                   []string{statusDeleting, statusNormal},
 		Target:                    []string{},
@@ -451,7 +470,9 @@ func waitProjectMembershipDeleted(ctx context.Context, conn *datazone.Client, fi
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-	if out, ok := outputRaw.(*datazone.DeleteProjectMembershipOutput); ok {
+    fmt.Println("Output raw")
+    fmt.Println(outputRaw)
+    if out, ok := outputRaw.(*FindProjectMembershipOutput); ok {
 		return out, err
 	}
 
@@ -469,12 +490,16 @@ func statusProjectMembership(ctx context.Context, conn *datazone.Client, findPro
 	return func() (any, string, error) {
 		out, err := findProjectMembership(ctx, conn, findProjectMembershipInput)
 		if tfresource.NotFound(err) {
+            fmt.Println("Status Non Normal")
 			return nil, "", nil
 		}
 
 		if err != nil {
+            fmt.Println("Status Non Normal")
 			return nil, "", err
 		}
+
+        fmt.Println("Status Normal")
 
 		return out, statusNormal, nil
 	}
@@ -485,11 +510,15 @@ func statusProjectMembership(ctx context.Context, conn *datazone.Client, findPro
 // request from the status function. However, we have found that find often
 // comes in handy in other places besides the status function. As a result, it
 // is good practice to define it separately.
-func findProjectMembership(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput) (*string, error) {
+func findProjectMembership(ctx context.Context, conn *datazone.Client, findProjectMembershipInput *FindProjectMembershipInput) (*FindProjectMembershipOutput, error) {
     input := datazone.ListProjectMembershipsInput{
         DomainIdentifier: findProjectMembershipInput.DomainIdentifier,
         ProjectIdentifier: findProjectMembershipInput.ProjectIdentifier,
     }
+    
+    fmt.Println("Retrieving for: ")
+    fmt.Println(*input.DomainIdentifier)
+    fmt.Println(*input.ProjectIdentifier)
 
 	pages := datazone.NewListProjectMembershipsPaginator(conn, &input)
 
@@ -507,39 +536,85 @@ func findProjectMembership(ctx context.Context, conn *datazone.Client, findProje
             return nil, err
         }
 
-        fmt.Println("In page")
-        fmt.Println("Num members: " + strconv.Itoa(len(page.Members)))
-
 		for _, membership := range page.Members {
-            if group, ok := membership.MemberDetails.(*awstypes.MemberDetailsMemberGroup); ok {
-                fmt.Println(*group.Value.GroupId)
-                fmt.Println(*findProjectMembershipInput.Member)
-                
+            fmt.Println("Membership found:")
+            switch v := membership.MemberDetails.(type) {
+            case *awstypes.MemberDetailsMemberGroup:
                 getGroupProfileInput := datazone.GetGroupProfileInput{
                     DomainIdentifier: findProjectMembershipInput.DomainIdentifier,
-                    GroupIdentifier: group.Value.GroupId,
+                    GroupIdentifier: v.Value.GroupId,
                 }
 
                 result, _ := conn.GetGroupProfile(ctx, &getGroupProfileInput)
-                fmt.Println(result.GroupName)
-            }
-            if user, ok := membership.MemberDetails.(*awstypes.MemberDetailsMemberUser); ok {
-                fmt.Println(*user.Value.UserId)
-                fmt.Println(*findProjectMembershipInput.Member)
 
+                if result.GroupName == findProjectMembershipInput.Member {
+                    return &FindProjectMembershipOutput{
+                        DomainIdentifier: input.DomainIdentifier,
+                        ProjectIdentifier: input.ProjectIdentifier,
+                        Member: result.GroupName,
+                    }, nil
+                }
+            case *awstypes.MemberDetailsMemberUser:
                 getUserProfileInput := datazone.GetUserProfileInput{
                     DomainIdentifier: findProjectMembershipInput.DomainIdentifier,
-                    UserIdentifier: user.Value.UserId,
+                    UserIdentifier: v.Value.UserId,
                 }
 
-                result, _ := conn.GetUserProfile(ctx, &getUserProfileInput)
-                fmt.Println(result.Details)
+                fmt.Println(*getUserProfileInput.DomainIdentifier)
+                fmt.Println(*getUserProfileInput.UserIdentifier)
 
+                result, _ := conn.GetUserProfile(ctx, &getUserProfileInput)
+                details := result.Details
+
+                fmt.Println("Result: ")
+
+                switch w := details.(type) {
+                case *awstypes.UserProfileDetailsMemberIam:
+                    fmt.Println(*w.Value.Arn)
+                    if w.Value.Arn == findProjectMembershipInput.Member {
+                        return &FindProjectMembershipOutput{
+                            DomainIdentifier: input.DomainIdentifier,
+                            ProjectIdentifier: input.ProjectIdentifier,
+                            Member: w.Value.Arn,
+                        }, nil
+                    }
+                case *awstypes.UserProfileDetailsMemberSso:
+                    if w.Value.Username == findProjectMembershipInput.Member {
+                        return &FindProjectMembershipOutput{
+                            DomainIdentifier: input.DomainIdentifier,
+                            ProjectIdentifier: input.ProjectIdentifier,
+                            Member: w.Value.Username,
+                        }, nil
+                    }
+                }
             }
 		}
 	}
 
     return nil, &retry.NotFoundError{}
+}
+
+const projectMembershipResourceIDSeparator = ":::"
+
+func projectMembershipParseResourceID(id string) (string, string, string, error) {
+	parts := strings.Split(id, projectMembershipResourceIDSeparator)
+
+    if len(parts) != 3 {
+        return "", "", "", fmt.Errorf("unexpected format of ID (%[1]s): expected 3 components, got %[2]d", id, len(parts))
+    }
+
+    domainIdentifier := parts[0]
+    projectIdentifier := parts[1]
+    memberName := parts[2]
+
+	return domainIdentifier, projectIdentifier, memberName, nil
+}
+
+func projectMembershipCreateResourceId(domainIdentifier, projectIdentifier, memberName string) string {
+	parts := []string{domainIdentifier, projectIdentifier, memberName}
+	id := strings.Join(parts, projectMembershipResourceIDSeparator)
+
+	return id
 }
 
 // TIP: ==== DATA STRUCTURES ====
@@ -555,6 +630,7 @@ func findProjectMembership(ctx context.Context, conn *datazone.Client, findProje
 // See more:
 // https://developer.hashicorp.com/terraform/plugin/framework/handling-data/accessing-values
 type resourceProjectMembershipModel struct {
+	ID                  types.String                                          `tfsdk:"id"`
 	DomainIdentifier    types.String                                          `tfsdk:"domain_identifier"`
     UserDesignation     types.String                                          `tfsdk:"user_designation"`
     Member              types.String                                          `tfsdk:"member"`
@@ -563,6 +639,12 @@ type resourceProjectMembershipModel struct {
 }
 
 type FindProjectMembershipInput struct {
+    DomainIdentifier    *string
+    ProjectIdentifier   *string
+    Member              *string
+}
+
+type FindProjectMembershipOutput struct {
     DomainIdentifier    *string
     ProjectIdentifier   *string
     Member              *string
