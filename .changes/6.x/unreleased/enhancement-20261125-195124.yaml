@@ -1,0 +1,5 @@
+kind: enhancement
+time: 2026-11-25T19:51:24.439758112-03:30
+custom:
+    Body: Add `rule.destination.encryption_configuration.use_source_multi_region_key` argument to support S3 Replication Multi-Region key resolution. `rule.destination.encryption_configuration.replica_kms_key_id` is now optional
+    Impact: resource/aws_s3_bucket_replication_configuration

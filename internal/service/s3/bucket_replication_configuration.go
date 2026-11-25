@@ -7,12 +7,14 @@ package s3
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -37,6 +39,8 @@ func resourceBucketReplicationConfiguration() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
+
+		CustomizeDiff: resourceBucketReplicationConfigurationCustomizeDiff,
 
 		SchemaFunc: func() map[string]*schema.Schema {
 			return map[string]*schema.Schema{
@@ -109,8 +113,22 @@ func resourceBucketReplicationConfiguration() *schema.Resource {
 												Schema: map[string]*schema.Schema{
 													"replica_kms_key_id": {
 														Type:         schema.TypeString,
-														Required:     true,
+														Optional:     true,
 														ValidateFunc: verify.ValidARN,
+													},
+													"use_source_multi_region_key": {
+														Type:     schema.TypeList,
+														Optional: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrStatus: {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[types.UseSourceMultiRegionKeyStatus](),
+																},
+															},
+														},
 													},
 												},
 											},
@@ -464,6 +482,67 @@ func resourceBucketReplicationConfigurationDelete(ctx context.Context, d *schema
 	return diags
 }
 
+// resourceBucketReplicationConfigurationCustomizeDiff validates rule.destination.encryption_configuration:
+//   - use_source_multi_region_key is only accepted by S3 in V2 (filter-based) rules, so it requires rule.filter;
+//   - the block must name a key S3 can use to encrypt replicas: either replica_kms_key_id, or
+//     use_source_multi_region_key with status Enabled (the related multi-Region key in the destination Region).
+//
+// The raw config is used so that values not yet known at plan time (e.g. the ARN of a key created in the same apply) are not rejected.
+func resourceBucketReplicationConfigurationCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ any) error {
+	rules := d.GetRawConfig().GetAttr(names.AttrRule)
+	if !rules.IsKnown() || rules.IsNull() {
+		return nil
+	}
+
+	for i, rule := range rules.AsValueSlice() {
+		for _, destination := range knownNestedBlocks(rule, names.AttrDestination) {
+			for _, encryptionConfiguration := range knownNestedBlocks(destination, names.AttrEncryptionConfiguration) {
+				useSourceMultiRegionKey := encryptionConfiguration.GetAttr("use_source_multi_region_key")
+				if !useSourceMultiRegionKey.IsKnown() {
+					continue
+				}
+
+				if !useSourceMultiRegionKey.IsNull() && useSourceMultiRegionKey.LengthInt() > 0 {
+					if filter := rule.GetAttr(names.AttrFilter); filter.IsKnown() && (filter.IsNull() || filter.LengthInt() == 0) {
+						return fmt.Errorf(`rule[%d]: "filter" must be specified when "destination.encryption_configuration.use_source_multi_region_key" is set`, i)
+					}
+				}
+
+				if v := encryptionConfiguration.GetAttr("replica_kms_key_id"); !v.IsKnown() || !v.IsNull() {
+					continue
+				}
+
+				enabled := false
+				for _, v := range knownNestedBlocks(encryptionConfiguration, "use_source_multi_region_key") {
+					if status := v.GetAttr(names.AttrStatus); !status.IsKnown() || (!status.IsNull() && status.AsString() == string(types.UseSourceMultiRegionKeyStatusEnabled)) {
+						enabled = true
+					}
+				}
+
+				if !enabled {
+					return fmt.Errorf(`rule[%d].destination[0].encryption_configuration: one of "replica_kms_key_id" or "use_source_multi_region_key" with status %q must be specified`, i, types.UseSourceMultiRegionKeyStatusEnabled)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// knownNestedBlocks returns the elements of the known, non-null nested block list attribute name of v.
+func knownNestedBlocks(v cty.Value, name string) []cty.Value {
+	if !v.IsKnown() || v.IsNull() {
+		return nil
+	}
+
+	v = v.GetAttr(name)
+	if !v.IsKnown() || v.IsNull() {
+		return nil
+	}
+
+	return v.AsValueSlice()
+}
+
 func findReplicationConfiguration(ctx context.Context, conn *s3.Client, bucket string) (*types.ReplicationConfiguration, error) {
 	input := &s3.GetBucketReplicationInput{
 		Bucket: aws.String(bucket),
@@ -636,6 +715,29 @@ func expandEncryptionConfiguration(tfList []any) *types.EncryptionConfiguration 
 
 	if v, ok := tfMap["replica_kms_key_id"].(string); ok && v != "" {
 		apiObject.ReplicaKmsKeyID = aws.String(v)
+	}
+
+	if v, ok := tfMap["use_source_multi_region_key"].([]any); ok && len(v) > 0 && v[0] != nil {
+		apiObject.UseSourceMultiRegionKey = expandUseSourceMultiRegionKey(v)
+	}
+
+	return apiObject
+}
+
+func expandUseSourceMultiRegionKey(tfList []any) *types.UseSourceMultiRegionKey {
+	if len(tfList) == 0 || tfList[0] == nil {
+		return nil
+	}
+
+	tfMap, ok := tfList[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	apiObject := &types.UseSourceMultiRegionKey{}
+
+	if v, ok := tfMap[names.AttrStatus].(string); ok && v != "" {
+		apiObject.Status = types.UseSourceMultiRegionKeyStatus(v)
 	}
 
 	return apiObject
@@ -982,6 +1084,22 @@ func flattenEncryptionConfiguration(apiObject *types.EncryptionConfiguration) []
 
 	if apiObject.ReplicaKmsKeyID != nil {
 		tfMap["replica_kms_key_id"] = aws.ToString(apiObject.ReplicaKmsKeyID)
+	}
+
+	if apiObject.UseSourceMultiRegionKey != nil {
+		tfMap["use_source_multi_region_key"] = flattenUseSourceMultiRegionKey(apiObject.UseSourceMultiRegionKey)
+	}
+
+	return []any{tfMap}
+}
+
+func flattenUseSourceMultiRegionKey(apiObject *types.UseSourceMultiRegionKey) []any {
+	if apiObject == nil {
+		return []any{}
+	}
+
+	tfMap := map[string]any{
+		names.AttrStatus: apiObject.Status,
 	}
 
 	return []any{tfMap}

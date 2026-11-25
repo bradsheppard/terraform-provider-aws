@@ -67,6 +67,11 @@ This data source exports the following attributes in addition to the arguments a
 ### `encryption_configuration` Block
 
 * `replica_kms_key_id` - ID (Key ARN or Alias ARN) of the customer managed AWS KMS key stored in KMS for the destination bucket.
+* `use_source_multi_region_key` - Multi-Region key resolution configuration. See [`use_source_multi_region_key` Block](#use_source_multi_region_key-block) below.
+
+### `use_source_multi_region_key` Block
+
+* `status` - Whether replicas of objects encrypted with a multi-Region KMS key are encrypted with the related multi-Region key in the destination Region.
 
 ### `metrics` Block
 

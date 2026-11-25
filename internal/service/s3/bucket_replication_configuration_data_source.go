@@ -110,7 +110,12 @@ type dataBucketRepConfigAccessControlTranslationModel struct {
 }
 
 type dataBucketRepConfigEncryptionConfigurationModel struct {
-	ReplicaKmsKeyId types.String `tfsdk:"replica_kms_key_id"`
+	ReplicaKmsKeyId         types.String                                                                     `tfsdk:"replica_kms_key_id"`
+	UseSourceMultiRegionKey fwtypes.ListNestedObjectValueOf[dataBucketRepConfigUseSourceMultiRegionKeyModel] `tfsdk:"use_source_multi_region_key"`
+}
+
+type dataBucketRepConfigUseSourceMultiRegionKeyModel struct {
+	Status types.String `tfsdk:"status"`
 }
 
 type dataBucketRepConfigMetricsModel struct {
