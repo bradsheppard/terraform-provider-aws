@@ -128,6 +128,193 @@ func TestAccS3BucketReplicationConfiguration_disappears(t *testing.T) {
 	})
 }
 
+// The useSourceMultiRegionKey tests each verify a single configuration on create, plus an import round-trip.
+// They deliberately avoid in-place update steps: the resource's Update reads back immediately after
+// PutBucketReplication and GetBucketReplication is eventually consistent, so update steps can observe the previous configuration.
+
+func TestAccS3BucketReplicationConfiguration_useSourceMultiRegionKey_basic(t *testing.T) {
+	ctx := acctest.Context(t)
+	resourceName := "aws_s3_bucket_replication_configuration.test"
+	rName := acctest.RandomWithPrefix(t, acctest.ResourcePrefix)
+
+	acctest.ParallelTest(ctx, t, resource.TestCase{
+		PreCheck: func() {
+			acctest.PreCheck(ctx, t)
+			acctest.PreCheckMultipleRegion(t, 2)
+		},
+		ErrorCheck:               acctest.ErrorCheck(t, names.S3ServiceID),
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		CheckDestroy:             acctest.CheckWithRegions(testAccCheckBucketReplicationConfigurationDestroyWithRegion(ctx, t), acctest.Region(), acctest.AlternateRegion()),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyBasic(rName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBucketReplicationConfigurationExists(ctx, t, resourceName),
+					resource.TestCheckResourceAttr(resourceName, acctest.CtRulePound, "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(resourceName, "rule.*", map[string]string{
+						"filter.#":      "1",
+						"destination.#": "1",
+						"destination.0.encryption_configuration.#":                                      "1",
+						"destination.0.encryption_configuration.0.replica_kms_key_id":                   "",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.#":        "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.0.status": string(types.UseSourceMultiRegionKeyStatusEnabled),
+						"source_selection_criteria.0.sse_kms_encrypted_objects.0.status":                string(types.SseKmsEncryptedObjectsStatusEnabled),
+					}),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccS3BucketReplicationConfiguration_useSourceMultiRegionKey_replicaKMSKeyID(t *testing.T) {
+	ctx := acctest.Context(t)
+	kmsKeyResourceName := "aws_kms_key.test"
+	resourceName := "aws_s3_bucket_replication_configuration.test"
+	rName := acctest.RandomWithPrefix(t, acctest.ResourcePrefix)
+
+	acctest.ParallelTest(ctx, t, resource.TestCase{
+		PreCheck: func() {
+			acctest.PreCheck(ctx, t)
+			acctest.PreCheckMultipleRegion(t, 2)
+		},
+		ErrorCheck:               acctest.ErrorCheck(t, names.S3ServiceID),
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		CheckDestroy:             acctest.CheckWithRegions(testAccCheckBucketReplicationConfigurationDestroyWithRegion(ctx, t), acctest.Region(), acctest.AlternateRegion()),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyReplicaKMSKeyID(rName, string(types.UseSourceMultiRegionKeyStatusEnabled)),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBucketReplicationConfigurationExists(ctx, t, resourceName),
+					resource.TestCheckTypeSetElemNestedAttrs(resourceName, "rule.*", map[string]string{
+						"destination.0.encryption_configuration.#":                                      "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.#":        "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.0.status": string(types.UseSourceMultiRegionKeyStatusEnabled),
+					}),
+					resource.TestCheckTypeSetElemAttrPair(resourceName, "rule.*.destination.0.encryption_configuration.0.replica_kms_key_id", kmsKeyResourceName, names.AttrARN),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccS3BucketReplicationConfiguration_useSourceMultiRegionKey_disabled(t *testing.T) {
+	ctx := acctest.Context(t)
+	kmsKeyResourceName := "aws_kms_key.test"
+	resourceName := "aws_s3_bucket_replication_configuration.test"
+	rName := acctest.RandomWithPrefix(t, acctest.ResourcePrefix)
+
+	acctest.ParallelTest(ctx, t, resource.TestCase{
+		PreCheck: func() {
+			acctest.PreCheck(ctx, t)
+			acctest.PreCheckMultipleRegion(t, 2)
+		},
+		ErrorCheck:               acctest.ErrorCheck(t, names.S3ServiceID),
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		CheckDestroy:             acctest.CheckWithRegions(testAccCheckBucketReplicationConfigurationDestroyWithRegion(ctx, t), acctest.Region(), acctest.AlternateRegion()),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyReplicaKMSKeyID(rName, string(types.UseSourceMultiRegionKeyStatusDisabled)),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBucketReplicationConfigurationExists(ctx, t, resourceName),
+					resource.TestCheckTypeSetElemNestedAttrs(resourceName, "rule.*", map[string]string{
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.#":        "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.0.status": string(types.UseSourceMultiRegionKeyStatusDisabled),
+					}),
+					resource.TestCheckTypeSetElemAttrPair(resourceName, "rule.*.destination.0.encryption_configuration.0.replica_kms_key_id", kmsKeyResourceName, names.AttrARN),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccS3BucketReplicationConfiguration_useSourceMultiRegionKey_notSpecified(t *testing.T) {
+	ctx := acctest.Context(t)
+	kmsKeyResourceName := "aws_kms_key.test"
+	resourceName := "aws_s3_bucket_replication_configuration.test"
+	rName := acctest.RandomWithPrefix(t, acctest.ResourcePrefix)
+
+	acctest.ParallelTest(ctx, t, resource.TestCase{
+		PreCheck: func() {
+			acctest.PreCheck(ctx, t)
+			acctest.PreCheckMultipleRegion(t, 2)
+		},
+		ErrorCheck:               acctest.ErrorCheck(t, names.S3ServiceID),
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		CheckDestroy:             acctest.CheckWithRegions(testAccCheckBucketReplicationConfigurationDestroyWithRegion(ctx, t), acctest.Region(), acctest.AlternateRegion()),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNotSpecified(rName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBucketReplicationConfigurationExists(ctx, t, resourceName),
+					resource.TestCheckTypeSetElemNestedAttrs(resourceName, "rule.*", map[string]string{
+						"filter.#": "1",
+						"destination.0.encryption_configuration.#":                               "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.#": "0",
+					}),
+					resource.TestCheckTypeSetElemAttrPair(resourceName, "rule.*.destination.0.encryption_configuration.0.replica_kms_key_id", kmsKeyResourceName, names.AttrARN),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccS3BucketReplicationConfiguration_useSourceMultiRegionKey_validation(t *testing.T) {
+	ctx := acctest.Context(t)
+	rName := acctest.RandomWithPrefix(t, acctest.ResourcePrefix)
+
+	acctest.ParallelTest(ctx, t, resource.TestCase{
+		PreCheck: func() {
+			acctest.PreCheck(ctx, t)
+			acctest.PreCheckMultipleRegion(t, 2)
+		},
+		ErrorCheck:               acctest.ErrorCheck(t, names.S3ServiceID),
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		CheckDestroy:             acctest.CheckWithRegions(testAccCheckBucketReplicationConfigurationDestroyWithRegion(ctx, t), acctest.Region(), acctest.AlternateRegion()),
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNoKey(rName, ""),
+				ExpectError: regexache.MustCompile(`At least one attribute out of\s+\[rule\[0\]\.destination\[0\]\.encryption_configuration\[0\]\.replica_kms_key_id,`),
+			},
+			{
+				Config:      testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNoKey(rName, `replica_kms_key_id = ""`),
+				ExpectError: regexache.MustCompile(`At least one attribute out of\s+\[rule\[0\]\.destination\[0\]\.encryption_configuration\[0\]\.replica_kms_key_id,`),
+			},
+			{
+				Config: testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNoKey(rName, `
+        use_source_multi_region_key {
+          status = "Disabled"
+        }
+`),
+				ExpectError: regexache.MustCompile(`Attribute\s+"rule\[0\]\.destination\[0\]\.encryption_configuration\[0\]\.replica_kms_key_id"\s+must\s+be\s+specified\s+when`),
+			},
+			{
+				Config:      testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNoFilter(rName),
+				ExpectError: regexache.MustCompile(`Attribute\s+"rule\[0\]\.filter"\s+must\s+be\s+specified\s+when`),
+			},
+		},
+	})
+}
+
 func TestAccS3BucketReplicationConfiguration_multipleDestinationsEmptyFilter(t *testing.T) {
 	ctx := acctest.Context(t)
 	rName := acctest.RandomWithPrefix(t, acctest.ResourcePrefix)
@@ -1800,6 +1987,255 @@ resource "aws_s3_bucket_replication_configuration" "test" {
     }
   }
 }`, acctest.AlternateRegion()))
+}
+
+func testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyBase(rName string) string {
+	return acctest.ConfigCompose(testAccBucketReplicationConfigurationConfig_base(rName), fmt.Sprintf(`
+# Source objects are encrypted with this multi-Region key; S3 resolves its replica in the destination Region.
+resource "aws_kms_key" "source" {
+  description             = %[1]q
+  multi_region            = true
+  deletion_window_in_days = 7
+}
+
+resource "aws_kms_replica_key" "destination" {
+  region = %[2]q
+
+  description             = %[1]q
+  primary_key_arn         = aws_kms_key.source.arn
+  deletion_window_in_days = 7
+}
+`, rName, acctest.AlternateRegion()))
+}
+
+func testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyBasic(rName string) string {
+	return acctest.ConfigCompose(testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyBase(rName), `
+resource "aws_s3_bucket_replication_configuration" "test" {
+  depends_on = [
+    aws_s3_bucket_versioning.source,
+    aws_s3_bucket_versioning.destination,
+    aws_kms_replica_key.destination,
+  ]
+
+  bucket = aws_s3_bucket.source.id
+  role   = aws_iam_role.test.arn
+
+  rule {
+    id     = "foobar"
+    status = "Enabled"
+
+    filter {
+      prefix = "foo"
+    }
+
+    delete_marker_replication {
+      status = "Disabled"
+    }
+
+    destination {
+      bucket = aws_s3_bucket.destination.arn
+
+      encryption_configuration {
+        use_source_multi_region_key {
+          status = "Enabled"
+        }
+      }
+
+      storage_class = "STANDARD"
+    }
+
+    source_selection_criteria {
+      sse_kms_encrypted_objects {
+        status = "Enabled"
+      }
+    }
+  }
+}`)
+}
+
+func testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyReplicaKMSKeyID(rName, status string) string {
+	return acctest.ConfigCompose(testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyBase(rName), fmt.Sprintf(`
+# Fallback destination key for objects encrypted with single-Region keys.
+resource "aws_kms_key" "test" {
+  region = %[1]q
+
+  description             = "TF Acceptance Test S3 repl KMS key"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+}
+
+resource "aws_s3_bucket_replication_configuration" "test" {
+  depends_on = [
+    aws_s3_bucket_versioning.source,
+    aws_s3_bucket_versioning.destination,
+    aws_kms_replica_key.destination,
+  ]
+
+  bucket = aws_s3_bucket.source.id
+  role   = aws_iam_role.test.arn
+
+  rule {
+    id     = "foobar"
+    status = "Enabled"
+
+    filter {
+      prefix = "foo"
+    }
+
+    delete_marker_replication {
+      status = "Disabled"
+    }
+
+    destination {
+      bucket = aws_s3_bucket.destination.arn
+
+      encryption_configuration {
+        replica_kms_key_id = aws_kms_key.test.arn
+
+        use_source_multi_region_key {
+          status = %[2]q
+        }
+      }
+
+      storage_class = "STANDARD"
+    }
+
+    source_selection_criteria {
+      sse_kms_encrypted_objects {
+        status = "Enabled"
+      }
+    }
+  }
+}`, acctest.AlternateRegion(), status))
+}
+
+func testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNoKey(rName, encryptionConfiguration string) string {
+	return acctest.ConfigCompose(testAccBucketReplicationConfigurationConfig_base(rName), fmt.Sprintf(`
+resource "aws_s3_bucket_replication_configuration" "test" {
+  depends_on = [
+    aws_s3_bucket_versioning.source,
+    aws_s3_bucket_versioning.destination
+  ]
+
+  bucket = aws_s3_bucket.source.id
+  role   = aws_iam_role.test.arn
+
+  rule {
+    id     = "foobar"
+    status = "Enabled"
+
+    filter {
+      prefix = "foo"
+    }
+
+    delete_marker_replication {
+      status = "Disabled"
+    }
+
+    destination {
+      bucket = aws_s3_bucket.destination.arn
+
+      encryption_configuration {
+%[1]s
+      }
+
+      storage_class = "STANDARD"
+    }
+
+    source_selection_criteria {
+      sse_kms_encrypted_objects {
+        status = "Enabled"
+      }
+    }
+  }
+}`, encryptionConfiguration))
+}
+
+func testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNotSpecified(rName string) string {
+	return acctest.ConfigCompose(testAccBucketReplicationConfigurationConfig_base(rName), fmt.Sprintf(`
+resource "aws_kms_key" "test" {
+  region = %[1]q
+
+  description             = "TF Acceptance Test S3 repl KMS key"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+}
+
+resource "aws_s3_bucket_replication_configuration" "test" {
+  depends_on = [
+    aws_s3_bucket_versioning.source,
+    aws_s3_bucket_versioning.destination
+  ]
+
+  bucket = aws_s3_bucket.source.id
+  role   = aws_iam_role.test.arn
+
+  rule {
+    id     = "foobar"
+    status = "Enabled"
+
+    filter {
+      prefix = "foo"
+    }
+
+    delete_marker_replication {
+      status = "Disabled"
+    }
+
+    destination {
+      bucket = aws_s3_bucket.destination.arn
+
+      encryption_configuration {
+        replica_kms_key_id = aws_kms_key.test.arn
+      }
+
+      storage_class = "STANDARD"
+    }
+
+    source_selection_criteria {
+      sse_kms_encrypted_objects {
+        status = "Enabled"
+      }
+    }
+  }
+}`, acctest.AlternateRegion()))
+}
+
+func testAccBucketReplicationConfigurationConfig_useSourceMultiRegionKeyNoFilter(rName string) string {
+	return acctest.ConfigCompose(testAccBucketReplicationConfigurationConfig_base(rName), `
+resource "aws_s3_bucket_replication_configuration" "test" {
+  depends_on = [
+    aws_s3_bucket_versioning.source,
+    aws_s3_bucket_versioning.destination
+  ]
+
+  bucket = aws_s3_bucket.source.id
+  role   = aws_iam_role.test.arn
+
+  rule {
+    id     = "foobar"
+    prefix = "foo"
+    status = "Enabled"
+
+    destination {
+      bucket = aws_s3_bucket.destination.arn
+
+      encryption_configuration {
+        use_source_multi_region_key {
+          status = "Enabled"
+        }
+      }
+
+      storage_class = "STANDARD"
+    }
+
+    source_selection_criteria {
+      sse_kms_encrypted_objects {
+        status = "Enabled"
+      }
+    }
+  }
+}`)
 }
 
 func testAccBucketReplicationConfigurationConfig_accessControlTranslation(rName string) string {

@@ -7,17 +7,20 @@ package s3
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -37,6 +40,8 @@ func resourceBucketReplicationConfiguration() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
+
+		CustomizeDiff: resourceBucketReplicationConfigurationCustomizeDiff,
 
 		SchemaFunc: func() map[string]*schema.Schema {
 			return map[string]*schema.Schema{
@@ -109,8 +114,22 @@ func resourceBucketReplicationConfiguration() *schema.Resource {
 												Schema: map[string]*schema.Schema{
 													"replica_kms_key_id": {
 														Type:         schema.TypeString,
-														Required:     true,
+														Optional:     true,
 														ValidateFunc: verify.ValidARN,
+													},
+													"use_source_multi_region_key": {
+														Type:     schema.TypeList,
+														Optional: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrStatus: {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[types.UseSourceMultiRegionKeyStatus](),
+																},
+															},
+														},
 													},
 												},
 											},
@@ -464,6 +483,88 @@ func resourceBucketReplicationConfigurationDelete(ctx context.Context, d *schema
 	return diags
 }
 
+// resourceBucketReplicationConfigurationCustomizeDiff validates rule.destination.encryption_configuration:
+//   - use_source_multi_region_key is only accepted by S3 in V2 (filter-based) rules, so it requires rule.filter;
+//   - the block must name a key S3 can use to encrypt replicas: either replica_kms_key_id, or
+//     use_source_multi_region_key with status Enabled (the related multi-Region key in the destination Region).
+//
+// The raw config is used so that values not yet known at plan time (e.g. the ARN of a key created in the same apply) are not rejected.
+func resourceBucketReplicationConfigurationCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ any) error {
+	var diags diag.Diagnostics
+
+	configRaw := d.GetRawConfig()
+	if !configRaw.IsKnown() || configRaw.IsNull() {
+		return nil
+	}
+
+	rulesPath := cty.GetAttrPath(names.AttrRule)
+	for i, rule := range bucketReplicationConfigurationKnownBlocks(configRaw, names.AttrRule) {
+		rulePath := rulesPath.IndexInt(i)
+		for j, destination := range bucketReplicationConfigurationKnownBlocks(rule, names.AttrDestination) {
+			destinationPath := rulePath.GetAttr(names.AttrDestination).IndexInt(j)
+			for k, encryptionConfiguration := range bucketReplicationConfigurationKnownBlocks(destination, names.AttrEncryptionConfiguration) {
+				encryptionConfigurationPath := destinationPath.GetAttr(names.AttrEncryptionConfiguration).IndexInt(k)
+				bucketReplicationConfigurationEncryptionConfigurationPlantimeValidate(rulePath, rule, encryptionConfigurationPath, encryptionConfiguration, &diags)
+			}
+		}
+	}
+
+	return sdkdiag.DiagnosticsError(diags)
+}
+
+func bucketReplicationConfigurationEncryptionConfigurationPlantimeValidate(rulePath cty.Path, rule cty.Value, encryptionConfigurationPath cty.Path, encryptionConfiguration cty.Value, diags *diag.Diagnostics) {
+	useSourceMultiRegionKey := encryptionConfiguration.GetAttr("use_source_multi_region_key")
+	if !useSourceMultiRegionKey.IsKnown() {
+		return
+	}
+
+	useSourceMultiRegionKeyPath := encryptionConfigurationPath.GetAttr("use_source_multi_region_key")
+	useSourceMultiRegionKeys := bucketReplicationConfigurationKnownBlocks(encryptionConfiguration, "use_source_multi_region_key")
+
+	if len(useSourceMultiRegionKeys) > 0 {
+		if filter := rule.GetAttr(names.AttrFilter); filter.IsKnown() && (filter.IsNull() || filter.LengthInt() == 0) {
+			*diags = append(*diags, errs.NewAttributeAlsoRequiresError(useSourceMultiRegionKeyPath, rulePath.GetAttr(names.AttrFilter)))
+		}
+	}
+
+	replicaKMSKeyIDPath := encryptionConfigurationPath.GetAttr("replica_kms_key_id")
+	// An empty string is treated as absent, as it is not sent to the API.
+	if v := encryptionConfiguration.GetAttr("replica_kms_key_id"); !v.IsKnown() || (!v.IsNull() && v.AsString() != "") {
+		return
+	}
+
+	if len(useSourceMultiRegionKeys) == 0 {
+		*diags = append(*diags, errs.NewAtLeastOneOfChildrenError(encryptionConfigurationPath, replicaKMSKeyIDPath, useSourceMultiRegionKeyPath))
+		return
+	}
+
+	for i, v := range useSourceMultiRegionKeys {
+		if status := v.GetAttr(names.AttrStatus); !status.IsKnown() || status.IsNull() || status.AsString() == string(types.UseSourceMultiRegionKeyStatusEnabled) {
+			continue
+		}
+
+		*diags = append(*diags, errs.NewInvalidValueAttributeCombinationError(encryptionConfigurationPath, fmt.Sprintf("Attribute %q must be specified when %q is not %q.",
+			errs.PathString(replicaKMSKeyIDPath),
+			errs.PathString(useSourceMultiRegionKeyPath.IndexInt(i).GetAttr(names.AttrStatus)),
+			types.UseSourceMultiRegionKeyStatusEnabled,
+		)))
+	}
+}
+
+// bucketReplicationConfigurationKnownBlocks returns the elements of the known, non-null nested block list attribute name of v.
+func bucketReplicationConfigurationKnownBlocks(v cty.Value, name string) []cty.Value {
+	if !v.IsKnown() || v.IsNull() {
+		return nil
+	}
+
+	v = v.GetAttr(name)
+	if !v.IsKnown() || v.IsNull() {
+		return nil
+	}
+
+	return v.AsValueSlice()
+}
+
 func findReplicationConfiguration(ctx context.Context, conn *s3.Client, bucket string) (*types.ReplicationConfiguration, error) {
 	input := &s3.GetBucketReplicationInput{
 		Bucket: aws.String(bucket),
@@ -636,6 +737,29 @@ func expandEncryptionConfiguration(tfList []any) *types.EncryptionConfiguration 
 
 	if v, ok := tfMap["replica_kms_key_id"].(string); ok && v != "" {
 		apiObject.ReplicaKmsKeyID = aws.String(v)
+	}
+
+	if v, ok := tfMap["use_source_multi_region_key"].([]any); ok && len(v) > 0 && v[0] != nil {
+		apiObject.UseSourceMultiRegionKey = expandUseSourceMultiRegionKey(v)
+	}
+
+	return apiObject
+}
+
+func expandUseSourceMultiRegionKey(tfList []any) *types.UseSourceMultiRegionKey {
+	if len(tfList) == 0 || tfList[0] == nil {
+		return nil
+	}
+
+	tfMap, ok := tfList[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	apiObject := &types.UseSourceMultiRegionKey{}
+
+	if v, ok := tfMap[names.AttrStatus].(string); ok && v != "" {
+		apiObject.Status = types.UseSourceMultiRegionKeyStatus(v)
 	}
 
 	return apiObject
@@ -982,6 +1106,22 @@ func flattenEncryptionConfiguration(apiObject *types.EncryptionConfiguration) []
 
 	if apiObject.ReplicaKmsKeyID != nil {
 		tfMap["replica_kms_key_id"] = aws.ToString(apiObject.ReplicaKmsKeyID)
+	}
+
+	if apiObject.UseSourceMultiRegionKey != nil {
+		tfMap["use_source_multi_region_key"] = flattenUseSourceMultiRegionKey(apiObject.UseSourceMultiRegionKey)
+	}
+
+	return []any{tfMap}
+}
+
+func flattenUseSourceMultiRegionKey(apiObject *types.UseSourceMultiRegionKey) []any {
+	if apiObject == nil {
+		return []any{}
+	}
+
+	tfMap := map[string]any{
+		names.AttrStatus: apiObject.Status,
 	}
 
 	return []any{tfMap}

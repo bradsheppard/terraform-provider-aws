@@ -1,0 +1,5 @@
+kind: enhancement
+time: 2026-11-25T19:51:25.575200328-03:30
+custom:
+    Body: Add `rule.destination.encryption_configuration.use_source_multi_region_key` attribute
+    Impact: data-source/aws_s3_bucket_replication_configuration

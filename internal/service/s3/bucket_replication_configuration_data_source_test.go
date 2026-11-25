@@ -49,17 +49,19 @@ func TestAccS3BucketReplicationConfigurationDataSource_basic(t *testing.T) {
 						"source_selection_criteria.0.replica_modifications.0.status":     string(types.ReplicaModificationsStatusEnabled),
 						"source_selection_criteria.0.sse_kms_encrypted_objects.#":        "1",
 						"source_selection_criteria.0.sse_kms_encrypted_objects.0.status": string(types.SseKmsEncryptedObjectsStatusEnabled),
-						"destination.#":                                     "1",
-						"destination.0.storage_class":                       string(types.StorageClassStandard),
-						"destination.0.replication_time.#":                  "1",
-						"destination.0.replication_time.0.status":           string(types.ReplicationTimeStatusEnabled),
-						"destination.0.replication_time.0.time.#":           "1",
-						"destination.0.replication_time.0.time.0.minutes":   "15",
-						"destination.0.metrics.#":                           "1",
-						"destination.0.metrics.0.status":                    string(types.MetricsStatusEnabled),
-						"destination.0.metrics.0.event_threshold.#":         "1",
-						"destination.0.metrics.0.event_threshold.0.minutes": "15",
-						"destination.0.encryption_configuration.#":          "1",
+						"destination.#":                                                                 "1",
+						"destination.0.storage_class":                                                   string(types.StorageClassStandard),
+						"destination.0.replication_time.#":                                              "1",
+						"destination.0.replication_time.0.status":                                       string(types.ReplicationTimeStatusEnabled),
+						"destination.0.replication_time.0.time.#":                                       "1",
+						"destination.0.replication_time.0.time.0.minutes":                               "15",
+						"destination.0.metrics.#":                                                       "1",
+						"destination.0.metrics.0.status":                                                string(types.MetricsStatusEnabled),
+						"destination.0.metrics.0.event_threshold.#":                                     "1",
+						"destination.0.metrics.0.event_threshold.0.minutes":                             "15",
+						"destination.0.encryption_configuration.#":                                      "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.#":        "1",
+						"destination.0.encryption_configuration.0.use_source_multi_region_key.0.status": string(types.UseSourceMultiRegionKeyStatusEnabled),
 					}),
 					resource.TestCheckTypeSetElemNestedAttrs(dataSourceName, "rule.*", map[string]string{
 						names.AttrID:                                        "rule2",
@@ -106,6 +108,7 @@ func TestAccS3BucketReplicationConfigurationDataSource_basic(t *testing.T) {
 						"destination.0.metrics.0.event_threshold.0.minutes": "15",
 					}),
 					resource.TestCheckTypeSetElemAttrPair(dataSourceName, "rule.*.destination.0.bucket", dstBucketResourceName, names.AttrARN),
+					resource.TestCheckTypeSetElemAttrPair(dataSourceName, "rule.*.destination.0.encryption_configuration.0.replica_kms_key_id", "aws_kms_key.test", names.AttrARN),
 				),
 			},
 		},
@@ -155,6 +158,9 @@ resource "aws_s3_bucket_replication_configuration" "test" {
       storage_class = %[1]q
       encryption_configuration {
         replica_kms_key_id = aws_kms_key.test.arn
+        use_source_multi_region_key {
+          status = "Enabled"
+        }
       }
       replication_time {
         status = "Enabled"

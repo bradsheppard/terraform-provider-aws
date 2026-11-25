@@ -283,6 +283,67 @@ resource "aws_s3_bucket_replication_configuration" "replication" {
 }
 ```
 
+### Replicating Objects Encrypted with Multi-Region KMS Keys
+
+With `use_source_multi_region_key`, S3 encrypts the replica of an object encrypted with a [multi-Region KMS key](https://docs.aws.amazon.com/kms/latest/developerguide/multi-region-keys-overview.html) using the related multi-Region key in the destination Region, so a single rule can replicate objects encrypted with any number of multi-Region keys. `replica_kms_key_id` is optional and is only used for objects encrypted with single-Region keys. The replication role needs `kms:Decrypt` on the source keys and `kms:Encrypt` and `kms:GenerateDataKey` on the related keys in the destination Region. See [Using Multi-Region key resolution](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-config-for-kms-objects.html#replication-kms-multi-region-keys) for details.
+
+This example extends the [Provider v6 example](#terraform-aws-provider-v6-and-above) above, where the source bucket is in `eu-central-1` and the destination bucket is in the provider's default Region, `eu-west-1`.
+
+```terraform
+# ... other configuration ...
+
+resource "aws_kms_key" "source" {
+  region = "eu-central-1"
+
+  description  = "Source multi-Region key"
+  multi_region = true
+}
+
+resource "aws_kms_replica_key" "destination" {
+  description     = "Destination replica of the source multi-Region key"
+  primary_key_arn = aws_kms_key.source.arn
+}
+
+resource "aws_s3_bucket_replication_configuration" "example" {
+  region = "eu-central-1"
+
+  # Must have bucket versioning enabled first
+  depends_on = [aws_s3_bucket_versioning.source]
+
+  role   = aws_iam_role.replication.arn
+  bucket = aws_s3_bucket.source.id
+
+  rule {
+    id     = "tenants"
+    status = "Enabled"
+
+    filter {
+      prefix = "tenants/"
+    }
+
+    delete_marker_replication {
+      status = "Disabled"
+    }
+
+    source_selection_criteria {
+      sse_kms_encrypted_objects {
+        status = "Enabled"
+      }
+    }
+
+    destination {
+      bucket = aws_s3_bucket.destination.arn
+
+      encryption_configuration {
+        use_source_multi_region_key {
+          status = "Enabled"
+        }
+      }
+    }
+  }
+}
+```
+
 ### Bi-Directional Replication
 
 ```terraform
@@ -422,7 +483,14 @@ The `access_control_translation` configuration block supports the following argu
 
 The `encryption_configuration` configuration block supports the following arguments:
 
-* `replica_kms_key_id` - (Required) ID (Key ARN or Alias ARN) of the customer managed AWS KMS key stored in KMS for the destination bucket.
+* `replica_kms_key_id` - (Optional) ID (Key ARN or Alias ARN) of the customer managed AWS KMS key stored in KMS for the destination bucket. Required unless `use_source_multi_region_key` `status` is `"Enabled"`, in which case it is used only for objects encrypted with single-Region keys.
+* `use_source_multi_region_key` - (Optional) Configuration block for Multi-Region key resolution. Only available with V2 replication configurations (requires `filter` in the `rule`). [See below](#use_source_multi_region_key-block).
+
+### `use_source_multi_region_key` Block
+
+The `use_source_multi_region_key` configuration block supports the following arguments:
+
+* `status` - (Required) Whether S3 encrypts the replica of an object encrypted with a multi-Region KMS key using the related multi-Region key in the destination Region. Either `"Enabled"` or `"Disabled"`.
 
 ### `metrics` Block
 
@@ -489,7 +557,7 @@ The `source_selection_criteria` configuration block supports the following argum
 
 * `replica_modifications` - (Optional) Configuration block that you can specify for selections for modifications on replicas. Amazon S3 doesn't replicate replica modifications by default. In the latest version of replication configuration (when `filter` is specified), you can specify this element and set the status to `Enabled` to replicate modifications on replicas.
 
-* `sse_kms_encrypted_objects` - (Optional) Configuration block for filter information for the selection of Amazon S3 objects encrypted with AWS KMS. If specified, `replica_kms_key_id` in `destination` `encryption_configuration` must be specified as well.
+* `sse_kms_encrypted_objects` - (Optional) Configuration block for filter information for the selection of Amazon S3 objects encrypted with AWS KMS. If specified, `destination` `encryption_configuration` must be specified as well.
 
 ### `replica_modifications` Block
 
