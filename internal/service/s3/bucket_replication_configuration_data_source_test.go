@@ -108,6 +108,7 @@ func TestAccS3BucketReplicationConfigurationDataSource_basic(t *testing.T) {
 						"destination.0.metrics.0.event_threshold.0.minutes": "15",
 					}),
 					resource.TestCheckTypeSetElemAttrPair(dataSourceName, "rule.*.destination.0.bucket", dstBucketResourceName, names.AttrARN),
+					resource.TestCheckTypeSetElemAttrPair(dataSourceName, "rule.*.destination.0.encryption_configuration.0.replica_kms_key_id", "aws_kms_key.test", names.AttrARN),
 				),
 			},
 		},

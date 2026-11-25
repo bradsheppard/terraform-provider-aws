@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -489,48 +490,69 @@ func resourceBucketReplicationConfigurationDelete(ctx context.Context, d *schema
 //
 // The raw config is used so that values not yet known at plan time (e.g. the ARN of a key created in the same apply) are not rejected.
 func resourceBucketReplicationConfigurationCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ any) error {
-	rules := d.GetRawConfig().GetAttr(names.AttrRule)
-	if !rules.IsKnown() || rules.IsNull() {
+	var diags diag.Diagnostics
+
+	configRaw := d.GetRawConfig()
+	if !configRaw.IsKnown() || configRaw.IsNull() {
 		return nil
 	}
 
-	for i, rule := range rules.AsValueSlice() {
-		for _, destination := range knownNestedBlocks(rule, names.AttrDestination) {
-			for _, encryptionConfiguration := range knownNestedBlocks(destination, names.AttrEncryptionConfiguration) {
-				useSourceMultiRegionKey := encryptionConfiguration.GetAttr("use_source_multi_region_key")
-				if !useSourceMultiRegionKey.IsKnown() {
-					continue
-				}
-
-				if !useSourceMultiRegionKey.IsNull() && useSourceMultiRegionKey.LengthInt() > 0 {
-					if filter := rule.GetAttr(names.AttrFilter); filter.IsKnown() && (filter.IsNull() || filter.LengthInt() == 0) {
-						return fmt.Errorf(`rule[%d]: "filter" must be specified when "destination.encryption_configuration.use_source_multi_region_key" is set`, i)
-					}
-				}
-
-				if v := encryptionConfiguration.GetAttr("replica_kms_key_id"); !v.IsKnown() || !v.IsNull() {
-					continue
-				}
-
-				enabled := false
-				for _, v := range knownNestedBlocks(encryptionConfiguration, "use_source_multi_region_key") {
-					if status := v.GetAttr(names.AttrStatus); !status.IsKnown() || (!status.IsNull() && status.AsString() == string(types.UseSourceMultiRegionKeyStatusEnabled)) {
-						enabled = true
-					}
-				}
-
-				if !enabled {
-					return fmt.Errorf(`rule[%d].destination[0].encryption_configuration: one of "replica_kms_key_id" or "use_source_multi_region_key" with status %q must be specified`, i, types.UseSourceMultiRegionKeyStatusEnabled)
-				}
+	rulesPath := cty.GetAttrPath(names.AttrRule)
+	for i, rule := range bucketReplicationConfigurationKnownBlocks(configRaw, names.AttrRule) {
+		rulePath := rulesPath.IndexInt(i)
+		for j, destination := range bucketReplicationConfigurationKnownBlocks(rule, names.AttrDestination) {
+			destinationPath := rulePath.GetAttr(names.AttrDestination).IndexInt(j)
+			for k, encryptionConfiguration := range bucketReplicationConfigurationKnownBlocks(destination, names.AttrEncryptionConfiguration) {
+				encryptionConfigurationPath := destinationPath.GetAttr(names.AttrEncryptionConfiguration).IndexInt(k)
+				bucketReplicationConfigurationEncryptionConfigurationPlantimeValidate(rulePath, rule, encryptionConfigurationPath, encryptionConfiguration, &diags)
 			}
 		}
 	}
 
-	return nil
+	return sdkdiag.DiagnosticsError(diags)
 }
 
-// knownNestedBlocks returns the elements of the known, non-null nested block list attribute name of v.
-func knownNestedBlocks(v cty.Value, name string) []cty.Value {
+func bucketReplicationConfigurationEncryptionConfigurationPlantimeValidate(rulePath cty.Path, rule cty.Value, encryptionConfigurationPath cty.Path, encryptionConfiguration cty.Value, diags *diag.Diagnostics) {
+	useSourceMultiRegionKey := encryptionConfiguration.GetAttr("use_source_multi_region_key")
+	if !useSourceMultiRegionKey.IsKnown() {
+		return
+	}
+
+	useSourceMultiRegionKeyPath := encryptionConfigurationPath.GetAttr("use_source_multi_region_key")
+	useSourceMultiRegionKeys := bucketReplicationConfigurationKnownBlocks(encryptionConfiguration, "use_source_multi_region_key")
+
+	if len(useSourceMultiRegionKeys) > 0 {
+		if filter := rule.GetAttr(names.AttrFilter); filter.IsKnown() && (filter.IsNull() || filter.LengthInt() == 0) {
+			*diags = append(*diags, errs.NewAttributeAlsoRequiresError(useSourceMultiRegionKeyPath, rulePath.GetAttr(names.AttrFilter)))
+		}
+	}
+
+	replicaKMSKeyIDPath := encryptionConfigurationPath.GetAttr("replica_kms_key_id")
+	// An empty string is treated as absent, as it is not sent to the API.
+	if v := encryptionConfiguration.GetAttr("replica_kms_key_id"); !v.IsKnown() || (!v.IsNull() && v.AsString() != "") {
+		return
+	}
+
+	if len(useSourceMultiRegionKeys) == 0 {
+		*diags = append(*diags, errs.NewAtLeastOneOfChildrenError(encryptionConfigurationPath, replicaKMSKeyIDPath, useSourceMultiRegionKeyPath))
+		return
+	}
+
+	for i, v := range useSourceMultiRegionKeys {
+		if status := v.GetAttr(names.AttrStatus); !status.IsKnown() || status.IsNull() || status.AsString() == string(types.UseSourceMultiRegionKeyStatusEnabled) {
+			continue
+		}
+
+		*diags = append(*diags, errs.NewInvalidValueAttributeCombinationError(encryptionConfigurationPath, fmt.Sprintf("Attribute %q must be specified when %q is not %q.",
+			errs.PathString(replicaKMSKeyIDPath),
+			errs.PathString(useSourceMultiRegionKeyPath.IndexInt(i).GetAttr(names.AttrStatus)),
+			types.UseSourceMultiRegionKeyStatusEnabled,
+		)))
+	}
+}
+
+// bucketReplicationConfigurationKnownBlocks returns the elements of the known, non-null nested block list attribute name of v.
+func bucketReplicationConfigurationKnownBlocks(v cty.Value, name string) []cty.Value {
 	if !v.IsKnown() || v.IsNull() {
 		return nil
 	}
